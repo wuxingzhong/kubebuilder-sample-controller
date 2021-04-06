@@ -50,74 +50,81 @@ func (r *MyKindReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 	ctx := context.Background()
 	log := r.Log.WithValues("mykind", req.NamespacedName)
 
-	// your logic here
-	log.Info("fetching MyKind resource")
+	// 控制器逻辑
+	log.Info("获取自定义MyKind资源...")
 	myKind := mygroupv1beta1.MyKind{}
+	// 获取自定义控制器资源
 	if err := r.Client.Get(ctx, req.NamespacedName, &myKind); err != nil {
-		log.Error(err, "failed to get MyKind resource")
+		log.Error(err, "获取自定义MyKind资源失败!")
 		// Ignore NotFound errors as they will be retried automatically if the
 		// resource is created in future.
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
-
+	// 清理资源
 	if err := r.cleanupOwnedResources(ctx, log, &myKind); err != nil {
-		log.Error(err, "failed to clean up old Deployment resources for this MyKind")
+		log.Error(err, "为MyKind资源管理器清理旧的Deployment资源失败!")
 		return ctrl.Result{}, err
 	}
 
 	log = log.WithValues("deployment_name", myKind.Spec.DeploymentName)
 
-	log.Info("checking if an existing Deployment exists for this resource")
+	log.Info("检查是否存在被Mykind控制的Deployment资源")
 	deployment := apps.Deployment{}
 	err := r.Client.Get(ctx, client.ObjectKey{Namespace: myKind.Namespace, Name: myKind.Spec.DeploymentName}, &deployment)
 	if apierrors.IsNotFound(err) {
-		log.Info("could not find existing Deployment for MyKind, creating one...")
+		log.Info("未找到被Mykind控制的Deployment资源, 创建一个Deployment..")
 
 		deployment = *buildDeployment(myKind)
+		// 创建deployment资源
 		if err := r.Client.Create(ctx, &deployment); err != nil {
-			log.Error(err, "failed to create Deployment resource")
+			log.Error(err, "创建Deployment资源失败!")
 			return ctrl.Result{}, err
 		}
-
-		r.Recorder.Eventf(&myKind, core.EventTypeNormal, "Created", "Created deployment %q", deployment.Name)
-		log.Info("created Deployment resource for MyKind")
+		// 记录事件
+		r.Recorder.Eventf(&myKind, core.EventTypeNormal, "Created", "创建 deployment %q", deployment.Name)
+		log.Info("为MyKind控制器创建Deployment资源")
 		return ctrl.Result{}, nil
 	}
 	if err != nil {
-		log.Error(err, "failed to get Deployment for MyKind resource")
+		log.Error(err, "获取MyKind控制的Deployment失败!")
 		return ctrl.Result{}, err
 	}
 
-	log.Info("existing Deployment resource already exists for MyKind, checking replica count")
+	log.Info("更新已经存在被Mykind控制的Deployment资源检查副本(replica)数量..")
 
+	// 默认副本数量为1
 	expectedReplicas := int32(1)
 	if myKind.Spec.Replicas != nil {
+		// 使用配置中的副本数量
 		expectedReplicas = *myKind.Spec.Replicas
 	}
 	if *deployment.Spec.Replicas != expectedReplicas {
-		log.Info("updating replica count", "old_count", *deployment.Spec.Replicas, "new_count", expectedReplicas)
+		log.Info("更新副本数量", "old_count", *deployment.Spec.Replicas, "new_count", expectedReplicas)
 
 		deployment.Spec.Replicas = &expectedReplicas
+		// 更新
 		if err := r.Client.Update(ctx, &deployment); err != nil {
-			log.Error(err, "failed to Deployment update replica count")
+			log.Error(err, "更新Deployment副本数量失败!")
 			return ctrl.Result{}, err
 		}
-
-		r.Recorder.Eventf(&myKind, core.EventTypeNormal, "Scaled", "Scaled deployment %q to %d replicas", deployment.Name, expectedReplicas)
+		// 记录事件
+		r.Recorder.Eventf(&myKind, core.EventTypeNormal, "Scaled", "扩缩 deployment %q to %d replicas", deployment.Name, expectedReplicas)
 
 		return ctrl.Result{}, nil
 	}
 
-	log.Info("replica count up to date", "replica_count", *deployment.Spec.Replicas)
+	log.Info("副本数量更新", "replica_count", *deployment.Spec.Replicas)
 
-	log.Info("updating MyKind resource status")
+	log.Info("更新 MyKind控制器资源状态")
 	myKind.Status.ReadyReplicas = deployment.Status.ReadyReplicas
+	log.Info("MyKind控制器资源状态", "ReadyReplicas", myKind.Status.ReadyReplicas)
+	// 更新
 	if r.Client.Status().Update(ctx, &myKind); err != nil {
 		log.Error(err, "failed to update MyKind status")
 		return ctrl.Result{}, err
 	}
 
-	log.Info("resource status synced")
+	log.Info("资源状态同步完成")
 
 	return ctrl.Result{}, nil
 }
@@ -125,10 +132,11 @@ func (r *MyKindReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 // cleanupOwnedResources will Delete any existing Deployment resources that
 // were created for the given MyKind that no longer match the
 // myKind.spec.deploymentName field.
+// cleanupOwnedResources 清理任何被Mykind控制器控制的已经存在的,但和 myKind.spec.deploymentName不匹配的Deployment资源
 func (r *MyKindReconciler) cleanupOwnedResources(ctx context.Context, log logr.Logger, myKind *mygroupv1beta1.MyKind) error {
-	log.Info("finding existing Deployments for MyKind resource")
+	log.Info("查找被MyKind控制器控制的Deployments资源")
 
-	// List all deployment resources owned by this MyKind
+	// 列出所有被MyKind控制器控制的Deployments资源
 	var deployments apps.DeploymentList
 	if err := r.List(ctx, &deployments, client.InNamespace(myKind.Namespace), client.MatchingField(deploymentOwnerKey, myKind.Name)); err != nil {
 		return err
@@ -137,25 +145,25 @@ func (r *MyKindReconciler) cleanupOwnedResources(ctx context.Context, log logr.L
 	deleted := 0
 	for _, depl := range deployments.Items {
 		if depl.Name == myKind.Spec.DeploymentName {
-			// If this deployment's name matches the one on the MyKind resource
-			// then do not delete it.
+			// 如果资源名称和 MyKind控制名称相同,则不需删除
 			continue
 		}
 
 		if err := r.Client.Delete(ctx, &depl); err != nil {
-			log.Error(err, "failed to delete Deployment resource")
+			log.Error(err, "删除Deployment资源失败!")
 			return err
 		}
 
-		r.Recorder.Eventf(myKind, core.EventTypeNormal, "Deleted", "Deleted deployment %q", depl.Name)
+		r.Recorder.Eventf(myKind, core.EventTypeNormal, "Deleted", "删除 deployment %q", depl.Name)
 		deleted++
 	}
 
-	log.Info("finished cleaning up old Deployment resources", "number_deleted", deleted)
+	log.Info("完成清理旧的deployment资源", "number_deleted", deleted)
 
 	return nil
 }
 
+// 配置一个Deployment资源
 func buildDeployment(myKind mygroupv1beta1.MyKind) *apps.Deployment {
 	deployment := apps.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
@@ -165,12 +173,14 @@ func buildDeployment(myKind mygroupv1beta1.MyKind) *apps.Deployment {
 		},
 		Spec: apps.DeploymentSpec{
 			Replicas: myKind.Spec.Replicas,
+			// 选择器
 			Selector: &metav1.LabelSelector{
 				MatchLabels: map[string]string{
 					"example-controller.jetstack.io/deployment-name": myKind.Spec.DeploymentName,
 				},
 			},
 			Template: core.PodTemplateSpec{
+				// meta
 				ObjectMeta: metav1.ObjectMeta{
 					Labels: map[string]string{
 						"example-controller.jetstack.io/deployment-name": myKind.Spec.DeploymentName,
@@ -179,8 +189,8 @@ func buildDeployment(myKind mygroupv1beta1.MyKind) *apps.Deployment {
 				Spec: core.PodSpec{
 					Containers: []core.Container{
 						{
-							Name:  "nginx",
-							Image: "nginx:latest",
+							Name:  "nginx",        // 容器名称
+							Image: "nginx:latest", // 使用镜像
 						},
 					},
 				},
